@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,13 +11,42 @@ namespace FTP_server
 {
     class ClientConnection
     {
+
+
+        #region Enums
+
+
+
+        private enum DataConnectionType
+        {
+            Passive,
+            Active,
+        }
+
+
+        #endregion
+
+        private TcpListener _passiveListener;
+
         private TcpClient _controlClient;
+        private TcpClient _dataClient;
 
         private NetworkStream _controlStream;
         private StreamReader _controlReader;
         private StreamWriter _controlWriter;
 
+
+        private DataConnectionType _dataConnectionType = DataConnectionType.Active;
+
+
         private string _username;
+       // private string _root;
+        private string _currentDirectory;
+        private IPEndPoint _dataEndpoint;
+      //  private IPEndPoint _remoteEndPoint;
+
+    
+    
 
         public ClientConnection(TcpClient client)
         {
@@ -32,9 +62,9 @@ namespace FTP_server
         {
             _controlWriter.WriteLine("220 Service Ready.");
             _controlWriter.Flush();
-
+            _currentDirectory = "/";
             string line;
-
+            _dataClient = new TcpClient();
             try
             {
                 while (!string.IsNullOrEmpty(line = _controlReader.ReadLine()))
@@ -75,6 +105,15 @@ namespace FTP_server
 
                                 response = "200 OK";
                                 break;
+                            case "PORT":
+                                response = Port(arguments);
+                                break;
+                            case "PASV":
+                                response = Passive();
+                                break;
+                            case "LIST":
+                                response = List(arguments);
+                                break;
 
                             default:
                                 response = "502 Command not implemented";
@@ -101,46 +140,139 @@ namespace FTP_server
             catch (Exception ex)
             {
                 Console.WriteLine(ex);
-                throw;
+                throw ;
             }
         }
-        //private string Type(string typeCode, string formatControl)
-        //{
-        //    string response = "500 ERROR";
 
-        //    switch (typeCode)
-        //    {
-        //        case "A":
-        //        case "I":
-        //           // _transferType = typeCode;
-        //            response = "200 OK";
-        //            break;
-        //        case "E":
-        //        case "L":
-        //        default:
-        //            response = "504 Command not implemented for that parameter.";
-        //            break;
-        //    }
 
-        //    if (formatControl != null)
-        //    {
-        //        switch (formatControl)
-        //        {
-        //            case "N":
-        //                response = "200 OK";
-        //                break;
-        //            case "T":
-        //            case "C":
-        //            default:
-        //                response = "504 Command not implemented for that parameter.";
-        //                break;
-        //        }
-        //    }
 
-        //    return response;
-        //}
+        private void DoList(IAsyncResult result)
+        {
+            if (_dataConnectionType == DataConnectionType.Active)
+            {
+                _dataClient.EndConnect(result);
+            }
+            else
+            {
+                _dataClient = _passiveListener.EndAcceptTcpClient(result);
+            }
 
-        #region FTP Commands
+            string pathname = (string)result.AsyncState;
+            using (NetworkStream dataStream = _dataClient.GetStream())
+            {
+              var  _dataReader = new StreamReader(dataStream, Encoding.ASCII);
+              var  _dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
+                IEnumerable<string> directories = Directory.EnumerateDirectories(pathname);
+
+                foreach (string dir in directories)
+                {
+                    DirectoryInfo d = new DirectoryInfo(dir);
+
+                    string date = d.LastWriteTime < DateTime.Now - TimeSpan.FromDays(180) ?
+                        d.LastWriteTime.ToString("MMM dd  yyyy") :
+                        d.LastWriteTime.ToString("MMM dd HH:mm");
+
+                    string line = string.Format("drwxr-xr-x   1 owner   group {0,8} {1} {2}", "4096", date, d.Name);
+
+                    _dataWriter.WriteLine(line);
+                    _dataWriter.Flush();
+                }
+                IEnumerable<string> files = Directory.EnumerateFiles(pathname);
+
+                foreach (string file in files)
+                {
+                    FileInfo f = new FileInfo(file);
+
+                    string date = f.LastWriteTime < DateTime.Now - TimeSpan.FromDays(180) ?
+                        f.LastWriteTime.ToString("MMM dd  yyyy") :
+                        f.LastWriteTime.ToString("MMM dd HH:mm");
+
+                    string line = string.Format("drwxr-xr-x   1 owner   group {0,8} {1} {2}", f.Length, date, f.Name);
+
+                    _dataWriter.WriteLine(line);
+                    _dataWriter.Flush();
+                }
+                _dataClient.Close();
+                _dataClient = null;
+
+                _controlWriter.WriteLine("226 Transfer complete");
+                _controlWriter.Flush();
+            }
+        }
+            #region FTP Commands
+            private string List(string pathname)
+        {
+            if (pathname == null)
+            {
+                pathname = string.Empty;
+            }
+
+            pathname = new DirectoryInfo(Path.Combine(_currentDirectory, pathname)).FullName;
+
+            
+                if (_dataConnectionType == DataConnectionType.Active)
+                {
+                    _dataClient = new TcpClient();
+                    _dataClient.BeginConnect(_dataEndpoint.Address, _dataEndpoint.Port, DoList, pathname);
+                }
+                else
+                {
+                    _passiveListener.BeginAcceptTcpClient(DoList, pathname);
+                }
+
+                return string.Format("150 Opening {0} mode data transfer for LIST", _dataConnectionType);
+            
+
+          //  return "450 Requested file action not taken";
+        }
+
+
+
+            private string Passive()
+        {
+            _dataConnectionType = DataConnectionType.Passive;
+            IPAddress localAddress = ((IPEndPoint)_controlClient.Client.LocalEndPoint).Address;
+
+            _passiveListener = new TcpListener(localAddress, 0);
+            _passiveListener.Start();
+            IPEndPoint localEndpoint = ((IPEndPoint)_passiveListener.LocalEndpoint);
+
+            byte[] address = localEndpoint.Address.GetAddressBytes();
+            short port = (short)localEndpoint.Port;
+
+            byte[] portArray = BitConverter.GetBytes(port);
+
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(portArray);
+
+            return string.Format("227 Entering Passive Mode ({0},{1},{2},{3},{4},{5})",
+                          address[0], address[1], address[2], address[3], portArray[0], portArray[1]);
+        }
+
+
+        private string Port(string argPort)
+        {
+            _dataConnectionType = DataConnectionType.Active;
+            string[] ipAndPort = argPort.Split(',');
+
+            byte[] ipAddress = new byte[4];
+            byte[] port = new byte[2];
+
+            for (int i = 0; i < 4; i++)
+            {
+                ipAddress[i] = Convert.ToByte(ipAndPort[i]);
+            }
+
+            for (int i = 4; i < 6; i++)
+            {
+                port[i - 4] = Convert.ToByte(ipAndPort[i]);
+            }
+
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(port);
+            _dataEndpoint = new IPEndPoint(new IPAddress(ipAddress), BitConverter.ToInt16(port, 0));
+            return "200 Data Connection Established";
+        }
 
         private string User(string username)
         {
