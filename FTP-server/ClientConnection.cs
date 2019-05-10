@@ -28,6 +28,7 @@ namespace FTP_server
             Local,
         }
         #endregion
+
         private TcpListener _passiveListener;
         private TransferType _connectionType = TransferType.Ascii;
         private TcpClient _controlClient;
@@ -49,13 +50,13 @@ namespace FTP_server
             _controlWriter = new StreamWriter(_controlStream);
         }
 
-        public void HandleClient(object obj)
+        public async Task HandleClient()
         {
             _controlWriter.WriteLine("220 Service Ready.");
             _controlWriter.Flush();
 
-            _currentDirectory = "C:\\FTP";
-            _root = "C:\\FTP";
+            _currentDirectory = "H:\\myserver";
+            _root = "H:\\myserver";
             string line;
             string renameFrom = null;
             _dataClient = new TcpClient();
@@ -125,7 +126,7 @@ namespace FTP_server
                                 response = Passive();
                                 break;
                             case "LIST":
-                                response = List(arguments);
+                                response = await List(arguments);
                                 break;
                             case "RETR":
                                 response = Retrieve(arguments);
@@ -187,13 +188,9 @@ namespace FTP_server
         }
 
 
-        private void DoList(IAsyncResult result)
+        private void DoList(TcpClient _dataClient, string pathname)
         {
 
-            _dataClient = _passiveListener.EndAcceptTcpClient(result);
-
-
-            string pathname = (string)result.AsyncState;
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
                 var _dataReader = new StreamReader(dataStream, Encoding.ASCII);
@@ -360,7 +357,7 @@ namespace FTP_server
         }
 
 
-        private string List(string pathname)
+        private async Task<string> List(string pathname)
         {
             if (pathname == null)
             {
@@ -369,10 +366,9 @@ namespace FTP_server
 
             pathname = new DirectoryInfo(Path.Combine(_currentDirectory, pathname)).FullName;
 
+            var client = await _passiveListener.AcceptTcpClientAsync();
 
-
-            _passiveListener.BeginAcceptTcpClient(DoList, pathname);
-
+            DoList(client, pathname);
 
             return string.Format("150");
 
