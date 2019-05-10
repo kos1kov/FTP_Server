@@ -17,35 +17,30 @@ namespace FTP_server
 
         }
 
-        private bool _listening = false;
         private TcpListener _listener;
-        public void Start()
+        public async Task Start()
         {
-            _listening = true;
+
             _listener = new TcpListener(IPAddress.Any, 21);
             _listener.Start();
             _activeConnections = new List<ClientConnection>();
-            _listener.BeginAcceptTcpClient(HandleAcceptTcpClient, _listener);
+
+            while (true)
+            {
+                HandleAcceptTcpClient(await _listener.AcceptTcpClientAsync());
+            }
         }
 
         public void Stop()
         {
-            _listening = false;
             _listener.Stop();
-            _listener = null;
-            
+            _listener = null;            
         }
 
-        private void HandleAcceptTcpClient(IAsyncResult result)
-        {
-            
-                _listener.BeginAcceptTcpClient(HandleAcceptTcpClient, _listener);
-                TcpClient client = _listener.EndAcceptTcpClient(result);
-
-                ClientConnection connection = new ClientConnection(client);
-
-                ThreadPool.QueueUserWorkItem(connection.HandleClient, client);
-            
+        private void HandleAcceptTcpClient(TcpClient client)
+        {           
+            ClientConnection connection = new ClientConnection(client);
+            Task.Run(() => connection.HandleClient());            
         }
 
         #region IDisposable Support
