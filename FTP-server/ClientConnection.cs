@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -14,46 +15,36 @@ namespace FTP_server
 
 
         #region Enums
-
-
-
         private enum DataConnectionType
         {
             Passive,
             Active,
         }
-
-
+        private enum TransferType
+        {
+            Ascii,
+            Ebcdic,
+            Image,
+            Local,
+        }
         #endregion
-
         private TcpListener _passiveListener;
-
+        private TransferType _connectionType = TransferType.Ascii;
         private TcpClient _controlClient;
         private TcpClient _dataClient;
-
         private NetworkStream _controlStream;
         private StreamReader _controlReader;
         private StreamWriter _controlWriter;
-
-
-        private DataConnectionType _dataConnectionType = DataConnectionType.Active;
-
-
+        private string _root;
         private string _username;
-       // private string _root;
         private string _currentDirectory;
         private IPEndPoint _dataEndpoint;
-      //  private IPEndPoint _remoteEndPoint;
 
-    
-    
 
         public ClientConnection(TcpClient client)
         {
             _controlClient = client;
-
             _controlStream = _controlClient.GetStream();
-
             _controlReader = new StreamReader(_controlStream);
             _controlWriter = new StreamWriter(_controlStream);
         }
@@ -62,8 +53,11 @@ namespace FTP_server
         {
             _controlWriter.WriteLine("220 Service Ready.");
             _controlWriter.Flush();
-            _currentDirectory = "/";
+
+            _currentDirectory = "C:\\FTP";
+            _root = "C:\\FTP";
             string line;
+            string renameFrom = null;
             _dataClient = new TcpClient();
             try
             {
@@ -89,24 +83,43 @@ namespace FTP_server
                             case "PASS":
                                 response = Password(arguments);
                                 break;
-                            //case "CWD":
-                            //    response = ChangeWorkingDirectory(arguments);
-                            //    break;
-                            //case "CDUP":
-                            //    response = ChangeWorkingDirectory("..");
-                            //    break;
+                            case "CWD":
+                                response = ChangeWorkingDirectory(arguments);
+                                break;
+                            case "CDUP":
+                                response = ChangeWorkingDirectory("..");
+                                break;
                             case "PWD":
-                                response = "257 \"/\" is current directory.";
+                                response = PrintWorkingDirectory();
                                 break;
                             case "QUIT":
                                 response = "221 Service closing control connection";
                                 break;
                             case "TYPE":
-
+                                response = Type(command[1], command.Length == 3 ? command[2] : null);
                                 response = "200 OK";
+                                break;
+                            case "RNFR":
+                                renameFrom = arguments;
+                                response = "350 Requested file action pending further information";
+                                break;
+                            case "RNTO":
+                                response = Rename(renameFrom, arguments);
+                                break;
+                            case "DELE":
+                                response = Delete(arguments);
+                                break;
+                            case "RMD":
+                                response = RemoveDir(arguments);
+                                break;
+                            case "MKD":
+                                response = CreateDir(arguments);
                                 break;
                             case "PORT":
                                 response = Port(arguments);
+                                break;
+                            case "STOR":
+                                response = Store(arguments);
                                 break;
                             case "PASV":
                                 response = Passive();
@@ -114,7 +127,9 @@ namespace FTP_server
                             case "LIST":
                                 response = List(arguments);
                                 break;
-
+                            case "RETR":
+                                response = Retrieve(arguments);
+                                break;
                             default:
                                 response = "502 Command not implemented";
                                 break;
@@ -140,39 +155,61 @@ namespace FTP_server
             catch (Exception ex)
             {
                 Console.WriteLine(ex);
-                throw ;
+                throw;
             }
         }
+        private bool IsPathValid(string path)
+        {
+            return path.StartsWith(_root);
+        }
 
+        private string NormalizeFilename(string path)
+        {
+            if (path == null)
+            {
+                path = string.Empty;
+            }
+
+            if (path == "/")
+            {
+                return _root;
+            }
+            else if (path.StartsWith("/"))
+            {
+                path = new FileInfo(Path.Combine(_root, path.Substring(1))).FullName;
+            }
+            else
+            {
+                path = new FileInfo(Path.Combine(_currentDirectory, path)).FullName;
+            }
+
+            return IsPathValid(path) ? path : null;
+        }
 
 
         private void DoList(IAsyncResult result)
         {
-            if (_dataConnectionType == DataConnectionType.Active)
-            {
-                _dataClient.EndConnect(result);
-            }
-            else
-            {
-                _dataClient = _passiveListener.EndAcceptTcpClient(result);
-            }
+
+            _dataClient = _passiveListener.EndAcceptTcpClient(result);
+
 
             string pathname = (string)result.AsyncState;
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
-              var  _dataReader = new StreamReader(dataStream, Encoding.ASCII);
-              var  _dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
+                var _dataReader = new StreamReader(dataStream, Encoding.ASCII);
+                var _dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
                 IEnumerable<string> directories = Directory.EnumerateDirectories(pathname);
 
                 foreach (string dir in directories)
                 {
                     DirectoryInfo d = new DirectoryInfo(dir);
 
-                    string date = d.LastWriteTime < DateTime.Now - TimeSpan.FromDays(180) ?
-                        d.LastWriteTime.ToString("MMM dd  yyyy") :
-                        d.LastWriteTime.ToString("MMM dd HH:mm");
-
-                    string line = string.Format("drwxr-xr-x   1 owner   group {0,8} {1} {2}", "4096", date, d.Name);
+                    string line = string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "{0:MM-dd-yy  hh:mmtt}       {1,-14} {2}",
+                                    d.LastWriteTime,
+                                    "<DIR>",
+                                    d.Name);
 
                     _dataWriter.WriteLine(line);
                     _dataWriter.Flush();
@@ -187,7 +224,12 @@ namespace FTP_server
                         f.LastWriteTime.ToString("MMM dd  yyyy") :
                         f.LastWriteTime.ToString("MMM dd HH:mm");
 
-                    string line = string.Format("drwxr-xr-x   1 owner   group {0,8} {1} {2}", f.Length, date, f.Name);
+                    string line = string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "{0:MM-dd-yy  hh:mmtt} {1,20} {2}",
+                                    f.LastWriteTime,
+                                    f.Length,
+                                    f.Name);
 
                     _dataWriter.WriteLine(line);
                     _dataWriter.Flush();
@@ -199,8 +241,126 @@ namespace FTP_server
                 _controlWriter.Flush();
             }
         }
-            #region FTP Commands
-            private string List(string pathname)
+        #region FTP Commands
+        private string Store(string pathname)
+        {
+            pathname = NormalizeFilename(pathname);
+
+            if (pathname != null)
+            {
+                _passiveListener.BeginAcceptTcpClient(DoStore, pathname);
+
+                return string.Format("226 Closing data connection, file transfer successful");
+            }
+
+            return "450 Requested file action not taken";
+        }
+        private void DoStore(IAsyncResult result)
+        {
+
+            _dataClient = _passiveListener.EndAcceptTcpClient(result);
+
+
+            string pathname = (string)result.AsyncState;
+
+            using (NetworkStream dataStream = _dataClient.GetStream())
+            {
+                long bytes = 0;
+
+                using (FileStream fs = new FileStream(pathname, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
+                {
+                    bytes = CopyStream(dataStream, fs);
+                }
+            }
+        }
+
+
+        private string Retrieve(string pathname)
+        {
+            pathname = NormalizeFilename(pathname);
+
+            if (IsPathValid(pathname))
+            {
+                if (File.Exists(pathname))
+                {
+
+                    _passiveListener.BeginAcceptTcpClient(DoRetrieve, pathname);
+
+
+                    return string.Format("150");
+                }
+            }
+
+            return "550 File Not Found";
+        }
+        private static long CopyStream(Stream input, Stream output, int bufferSize)
+        {
+            byte[] buffer = new byte[bufferSize];
+            int count = 0;
+            long total = 0;
+
+            while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, count);
+                total += count;
+            }
+
+            return total;
+        }
+        private long CopyStream(Stream input, Stream output)
+        {
+            if (_connectionType == TransferType.Image)
+            {
+                return CopyStream(input, output, 4096);
+            }
+            else
+            {
+                return CopyStreamAscii(input, output, 4096);
+            }
+        }
+        private static long CopyStreamAscii(Stream input, Stream output, int bufferSize)
+        {
+            char[] buffer = new char[bufferSize];
+            int count = 0;
+            long total = 0;
+
+            using (StreamReader rdr = new StreamReader(input, Encoding.ASCII))
+            {
+                using (StreamWriter wtr = new StreamWriter(output, Encoding.ASCII))
+                {
+                    while ((count = rdr.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        wtr.Write(buffer, 0, count);
+                        total += count;
+                    }
+                }
+            }
+
+            return total;
+        }
+        private void DoRetrieve(IAsyncResult result)
+        {
+
+            _dataClient = _passiveListener.EndAcceptTcpClient(result);
+
+
+            string pathname = (string)result.AsyncState;
+
+            using (NetworkStream dataStream = _dataClient.GetStream())
+            {
+                using (FileStream fs = new FileStream(pathname, FileMode.Open, FileAccess.Read))
+                {
+                    CopyStream(fs, dataStream);
+                    _dataClient.Close();
+                    _dataClient = null;
+                    _controlWriter.WriteLine("226 Closing data connection, file transfer successful");
+                    _controlWriter.Flush();
+                }
+            }
+        }
+
+
+        private string List(string pathname)
         {
             if (pathname == null)
             {
@@ -209,28 +369,20 @@ namespace FTP_server
 
             pathname = new DirectoryInfo(Path.Combine(_currentDirectory, pathname)).FullName;
 
-            
-                if (_dataConnectionType == DataConnectionType.Active)
-                {
-                    _dataClient = new TcpClient();
-                    _dataClient.BeginConnect(_dataEndpoint.Address, _dataEndpoint.Port, DoList, pathname);
-                }
-                else
-                {
-                    _passiveListener.BeginAcceptTcpClient(DoList, pathname);
-                }
 
-                return string.Format("150 Opening {0} mode data transfer for LIST", _dataConnectionType);
-            
 
-          //  return "450 Requested file action not taken";
+            _passiveListener.BeginAcceptTcpClient(DoList, pathname);
+
+
+            return string.Format("150");
+
         }
 
 
 
-            private string Passive()
+        private string Passive()
         {
-            _dataConnectionType = DataConnectionType.Passive;
+
             IPAddress localAddress = ((IPEndPoint)_controlClient.Client.LocalEndPoint).Address;
 
             _passiveListener = new TcpListener(localAddress, 0);
@@ -252,7 +404,7 @@ namespace FTP_server
 
         private string Port(string argPort)
         {
-            _dataConnectionType = DataConnectionType.Active;
+
             string[] ipAndPort = argPort.Split(',');
 
             byte[] ipAddress = new byte[4];
@@ -273,7 +425,76 @@ namespace FTP_server
             _dataEndpoint = new IPEndPoint(new IPAddress(ipAddress), BitConverter.ToInt16(port, 0));
             return "200 Data Connection Established";
         }
+        private string Type(string typeCode, string formatControl)
+        {
+            switch (typeCode.ToUpperInvariant())
+            {
+                case "A":
+                    _connectionType = TransferType.Ascii;
+                    break;
+                case "I":
+                    _connectionType = TransferType.Image;
+                    break;
+                default:
+                    return "504 Command not implemented for that parameter";
+            }
 
+            if (!string.IsNullOrWhiteSpace(formatControl))
+            {
+                return "504 Command not implemented for that parameter";
+            }
+
+            return string.Format("200 Type set to {0}", _connectionType);
+        }
+        private string ChangeWorkingDirectory(string pathname)
+        {
+            if (pathname == "/")
+            {
+                _currentDirectory = _root;
+            }
+            else
+            {
+                string newDir;
+
+                if (pathname.StartsWith("/"))
+                {
+                    pathname = pathname.Substring(1).Replace('/', '\\');
+                    newDir = Path.Combine(_root, pathname);
+                }
+                else
+                {
+                    pathname = pathname.Replace('/', '\\');
+                    newDir = Path.Combine(_currentDirectory, pathname);
+                }
+
+                if (Directory.Exists(newDir))
+                {
+                    _currentDirectory = new DirectoryInfo(newDir).FullName;
+
+                    if (!IsPathValid(_currentDirectory))
+                    {
+                        _currentDirectory = _root;
+                    }
+                }
+                else
+                {
+                    _currentDirectory = _root;
+                }
+            }
+
+            return "250 Changed to new directory";
+        }
+        private string PrintWorkingDirectory()
+        {
+            string current = _currentDirectory.Replace(_root, string.Empty).Replace('\\', '/');
+
+            if (current.Length == 0)
+            {
+                current = "/";
+            }
+
+            return string.Format("257 \"{0}\" is current directory.", current); ;
+        }
         private string User(string username)
         {
             _username = username;
@@ -292,12 +513,97 @@ namespace FTP_server
                 return "530 Not logged in";
             }
         }
-
-        private string ChangeWorkingDirectory(string pathname)
+        private string Rename(string renameFrom, string renameTo)
         {
-            return "250 Changed to new directory";
+            if (string.IsNullOrWhiteSpace(renameFrom) || string.IsNullOrWhiteSpace(renameTo))
+            {
+                return "450 Requested file action not taken";
+            }
+
+            renameFrom = NormalizeFilename(renameFrom);
+            renameTo = NormalizeFilename(renameTo);
+
+            if (renameFrom != null && renameTo != null)
+            {
+                if (File.Exists(renameFrom))
+                {
+                    File.Move(renameFrom, renameTo);
+                }
+                else if (Directory.Exists(renameFrom))
+                {
+                    Directory.Move(renameFrom, renameTo);
+                }
+                else
+                {
+                    return "450 Requested file action not taken";
+                }
+
+                return "250 Requested file action okay, completed";
+            }
+
+            return "450 Requested file action not taken";
+        }
+        private string Delete(string pathname)
+        {
+            pathname = NormalizeFilename(pathname);
+
+            if (pathname != null)
+            {
+                if (File.Exists(pathname))
+                {
+                    File.Delete(pathname);
+                }
+                else
+                {
+                    return "550 File Not Found";
+                }
+
+                return "250 Requested file action okay, completed";
+            }
+
+            return "550 File Not Found";
         }
 
+        private string RemoveDir(string pathname)
+        {
+            pathname = NormalizeFilename(pathname);
+
+            if (pathname != null)
+            {
+                if (Directory.Exists(pathname))
+                {
+                    Directory.Delete(pathname);
+                }
+                else
+                {
+                    return "550 Directory Not Found";
+                }
+
+                return "250 Requested file action okay, completed";
+            }
+
+            return "550 Directory Not Found";
+        }
+        private string CreateDir(string pathname)
+        {
+            pathname = NormalizeFilename(pathname);
+
+            if (pathname != null)
+            {
+                if (!Directory.Exists(pathname))
+                {
+                    Directory.CreateDirectory(pathname);
+                }
+                else
+                {
+                    return "550 Directory already exists";
+                }
+
+                return "250 Requested file action okay, completed";
+            }
+
+            return "550 Directory Not Found";
+        }
         #endregion
     }
 }

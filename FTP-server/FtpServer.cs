@@ -16,20 +16,24 @@ namespace FTP_server
         {
 
         }
+
+        private bool _listening = false;
         private TcpListener _listener;
         public void Start()
         {
+            _listening = true;
             _listener = new TcpListener(IPAddress.Any, 21);
             _listener.Start();
+            _activeConnections = new List<ClientConnection>();
             _listener.BeginAcceptTcpClient(HandleAcceptTcpClient, _listener);
         }
 
         public void Stop()
         {
-            if (_listener != null)
-            {
-                _listener.Stop();
-            }
+            _listening = false;
+            _listener.Stop();
+            _listener = null;
+            
         }
 
         private void HandleAcceptTcpClient(IAsyncResult result)
@@ -46,6 +50,7 @@ namespace FTP_server
 
         #region IDisposable Support
         private bool disposedValue = false; // Для определения избыточных вызовов
+        private List<ClientConnection> _activeConnections;
 
         protected virtual void Dispose(bool disposing)
         {
