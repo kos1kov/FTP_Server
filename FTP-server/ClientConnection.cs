@@ -55,8 +55,8 @@ namespace FTP_server
             _controlWriter.WriteLine("220 Service Ready.");
             _controlWriter.Flush();
 
-            _currentDirectory = "H:\\myserver";
-            _root = "H:\\myserver";
+            _currentDirectory = "C:\\FTP";
+            _root = "C:\\FTP";
             string line;
             string renameFrom = null;
             _dataClient = new TcpClient();
@@ -120,7 +120,7 @@ namespace FTP_server
                                 response = Port(arguments);
                                 break;
                             case "STOR":
-                                response = Store(arguments);
+                                response = await Store(arguments);
                                 break;
                             case "PASV":
                                 response = Passive();
@@ -129,7 +129,7 @@ namespace FTP_server
                                 response = await List(arguments);
                                 break;
                             case "RETR":
-                                response = Retrieve(arguments);
+                                response = await Retrieve(arguments);
                                 break;
                             default:
                                 response = "502 Command not implemented";
@@ -193,8 +193,8 @@ namespace FTP_server
 
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
-                var _dataReader = new StreamReader(dataStream, Encoding.ASCII);
-                var _dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
+                var _dataReader = new StreamReader(dataStream, Encoding.UTF8);
+                var _dataWriter = new StreamWriter(dataStream, Encoding.UTF8);
                 IEnumerable<string> directories = Directory.EnumerateDirectories(pathname);
 
                 foreach (string dir in directories)
@@ -239,26 +239,22 @@ namespace FTP_server
             }
         }
         #region FTP Commands
-        private string Store(string pathname)
+        private async Task<string> Store(string pathname)
         {
             pathname = NormalizeFilename(pathname);
 
             if (pathname != null)
             {
-                _passiveListener.BeginAcceptTcpClient(DoStore, pathname);
+                var client = await _passiveListener.AcceptTcpClientAsync();
+                DoStore(client, pathname);
 
                 return string.Format("226 Closing data connection, file transfer successful");
             }
 
             return "450 Requested file action not taken";
         }
-        private void DoStore(IAsyncResult result)
+        private void DoStore(TcpClient _dataClient, string pathname)
         {
-
-            _dataClient = _passiveListener.EndAcceptTcpClient(result);
-
-
-            string pathname = (string)result.AsyncState;
 
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
@@ -272,7 +268,7 @@ namespace FTP_server
         }
 
 
-        private string Retrieve(string pathname)
+        private async Task<string> Retrieve(string pathname)
         {
             pathname = NormalizeFilename(pathname);
 
@@ -281,7 +277,8 @@ namespace FTP_server
                 if (File.Exists(pathname))
                 {
 
-                    _passiveListener.BeginAcceptTcpClient(DoRetrieve, pathname);
+                    var client = await _passiveListener.AcceptTcpClientAsync();
+                    DoRetrieve(client,pathname);
 
 
                     return string.Format("150");
@@ -335,13 +332,8 @@ namespace FTP_server
 
             return total;
         }
-        private void DoRetrieve(IAsyncResult result)
+        private void DoRetrieve(TcpClient _dataClient, string pathname)
         {
-
-            _dataClient = _passiveListener.EndAcceptTcpClient(result);
-
-
-            string pathname = (string)result.AsyncState;
 
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
