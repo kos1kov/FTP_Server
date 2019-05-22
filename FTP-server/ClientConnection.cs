@@ -37,9 +37,12 @@ namespace FTP_server
         private StreamReader _controlReader;
         private StreamWriter _controlWriter;
         private string _root;
+        private string _storage = "C:\\FTP";
         private string _username;
+        private float _password;
         private string _currentDirectory;
         private IPEndPoint _dataEndpoint;
+        
 
 
         public ClientConnection(TcpClient client)
@@ -55,8 +58,8 @@ namespace FTP_server
             _controlWriter.WriteLine("220 Service Ready.");
             _controlWriter.Flush();
 
-            _currentDirectory = "C:\\FTP";
-            _root = "C:\\FTP";
+          //  _currentDirectory = "C:\\FTP";
+           
             string line;
             string renameFrom = null;
             _dataClient = new TcpClient();
@@ -159,6 +162,16 @@ namespace FTP_server
                 throw;
             }
         }
+
+        private string Registration()
+        {
+            Directory.CreateDirectory(Path.Combine(_storage, _username));
+            User user = new User { Name = _username, Hash = _password, homedir = Path.Combine(_storage, _username) };
+            FtpServer.db.Users.Add(user);
+            FtpServer.db.SaveChanges();
+            return "200 ok";
+        }
+
         private bool IsPathValid(string path)
         {
             return path.StartsWith(_root);
@@ -193,8 +206,8 @@ namespace FTP_server
 
             using (NetworkStream dataStream = _dataClient.GetStream())
             {
-                var _dataReader = new StreamReader(dataStream, Encoding.UTF8);
-                var _dataWriter = new StreamWriter(dataStream, Encoding.UTF8);
+                
+                var _dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
                 IEnumerable<string> directories = Directory.EnumerateDirectories(pathname);
 
                 foreach (string dir in directories)
@@ -351,6 +364,7 @@ namespace FTP_server
 
         private async Task<string> List(string pathname)
         {
+            pathname = NormalizeFilename(pathname);
             if (pathname == null)
             {
                 pathname = string.Empty;
@@ -492,13 +506,20 @@ namespace FTP_server
 
         private string Password(string password)
         {
-            if (true)
+            _password = password.GetHashCode();
+            var users = FtpServer.db.Users.FirstOrDefault(x => x.Hash == _password);
+            if (users != null)
             {
+                _root = users.homedir;
+                _currentDirectory = _root;
                 return "230 User logged in";
             }
             else
             {
-                return "530 Not logged in";
+                Registration();
+                _root = Path.Combine(_storage, _username);
+                _currentDirectory = _root;
+                return "230 User logged in";
             }
         }
         private string Rename(string renameFrom, string renameTo)

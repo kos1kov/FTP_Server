@@ -12,9 +12,10 @@ namespace FTP_server
 {
     class FtpServer: IDisposable
     {
+      public static  ApplicationContext db = new ApplicationContext();
         public FtpServer()
         {
-
+            db.Database.EnsureCreated();
         }
 
         private TcpListener _listener;
